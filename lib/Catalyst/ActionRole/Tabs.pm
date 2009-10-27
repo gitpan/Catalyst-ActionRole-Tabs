@@ -5,7 +5,7 @@ use namespace::autoclean;
 
 use Catalyst::Exception;
 
-our $VERSION = '0.001000';
+our $VERSION = '0.003000';
 
 =head1 NAME
 
@@ -47,7 +47,7 @@ Catalyst::ActionRole::Tabs - Add tabs to Catalyst controller actions
   [% # Assuming tab_navigation to be an array reference %]
   [% # See below under CALLBACK METHODS %]
   [% # For applicable CSS see below under SAMPLE CSS -%]
-  <ul>
+  <ul class="tabs">
   [% FOR tab IN tab_navigation %]
       <li[% IF tab.selected %] class="selected"[% END %]>
           <a href="[% tab.uri %]">[% tab.label %]</a>
@@ -86,7 +86,9 @@ Assign a Tab to the action. The optional argument specifies the label text.
 Without an explicite label text the action name is used, with the first
 letter uppercased and the rest lowercased.
 
-=head2 TabAlias(aliasaction)
+=head2 TabAlias
+
+  TabAlias(Aliasaction)
 
 In some cases it is usefull to assign one tab to many actions. E.g. an
 action with a form to update some data, might be called initially as
@@ -104,6 +106,9 @@ C<edit>:
   sub update : Local Does(Tabs) TabAlias(edit) { ... }
 
 =head1 METHODS
+
+Normaly you never have to touch the following two methods.
+They are documented here to reveal their purpose.
 
 =head2 BUILD
 
@@ -203,6 +208,17 @@ A dump of the controller's tab hash might look like this:
     },
   }
 
+=head3 Compatibility notice:
+
+In the first public release of this module query parameters from the current
+request were appended to the tab URIs. The idea behind it was to easily
+pass a session id. This turned out to be a bad idea, because all kinds of
+paramaters were passed to pages, where they might introduce complications.
+Therefore beginning with this release no query parameters are appended to
+the tab URIs automatically, and the desired query parameters must be passed
+manually in the L</BUILD_TABS> callback method.
+See L<below|/BUILD_TABS> how this can be done.
+
 =cut
 
 before execute => sub {
@@ -213,25 +229,18 @@ before execute => sub {
     my $request = $c->request;
     my $request_captures = $request->captures;
     my $request_arguments = $request->arguments;
-    my $request_query_params = $request->query_params;
     my ($name, $action, $alias, $attrs, $tab, $uri, $selected, $has_selected);
     my (%t, %ta, %tabs);
 
     for my $container ($dispatcher->get_containers($namespace)) {
 	while (($name, $action) = each %{$container->actions}) {
-
 	    next
 		unless $action->namespace eq $namespace;
-
-	    # if $action Does(ACL)
-	    next
-		if $action->does('Catalyst::ActionRole::ACL')
-		    and not $action->can_visit($c);
 
 	    $attrs = $action->attributes;
 
 	    if (defined($tab = $attrs->{Tab})) {
-		$t{$name} = $tab->[0] || ucfirst(lc $name);
+		$t{$name} = [$action, $tab->[0] || ucfirst(lc $name)];
 	    }
 	    elsif (defined($tab = $attrs->{TabAlias})) {
 		$ta{$name} = $tab->[0];
@@ -241,21 +250,25 @@ before execute => sub {
 	    }
 	}
     }
-
     for (keys %t) {
+	($action, $name) = @{$t{$_}};
 	# get all URIs for the current namespace and request captures
 	$uri = $c->uri_for(
-	    $dispatcher->get_action($_, $namespace),
+	    $action,
 	    $request_captures,
-	    @$request_arguments,
-	    $request_query_params
+	    @$request_arguments
 	)
 	    or next;
+	# if $action Does(ACL)
+	next
+	    if $action->does('Catalyst::ActionRole::ACL')
+		and not $action->can_visit($c);
+
 	$selected = $action_name eq $_
 	    and $has_selected = 1;
 	$tabs{$_} = {
 	    name => $_,
-	    label => $t{$_},
+	    label => $name,
 	    selected => $selected,
 	    uri => $uri,
 	};
@@ -293,22 +306,33 @@ If method C<BUILD_TABS()> exists in the controller class, it is called as
 else the tabs hash as described in L</execute> is stored at
 C<< $c->stash->{tabs} >>.
 
-C<BUILD_TABS()> has to store the tabs data wherever appropriate.
-It can also be used to convert the incomig hash into an array with the
-desired order of tabs. Finally is is a place to apply further
+If it exists C<BUILD_TABS()> has to store the tabs data wherever
+appropriate. It can also be used to convert the incomig hash into an array
+with the desired order of tabs. Finally is is a place to apply further
 modifications to the tabs, like adding or removing tabs.
 
-Here is an example for a C<BUILD_TABS()>, that turns tab data into an
-array with the desired order and then stores it onto the stash under the
-name C<tab_navigation>:
+Here is an example for a C<BUILD_TABS()>. It
+
+=over
+
+=item * turns tab data into an array with the desired order;
+
+=item * adds the query parameter C<session_id> to all tab urls;
+
+=item * stores it onto the stash under the name C<tab_navigation>:
+
+=back
 
   sub BUILD_TABS {
     my ($self, $c, $tabs) = @_;
     my (@tabs, $tab);
+    my $session_id = $c->request->param('session_id');
 
     for (qw(browse add view edit remove)) {
-      $tab = $tabs->{$_}
-        and push @tabs, $tab;
+      $tab = $tabs->{$_} or next;
+      $tab->{uri}->query("session_id=$session_id")
+        if $session_id;
+      push @tabs, $tab;
     }
 
     $c->stash->{tab_navigation} = \@tabs;
@@ -317,9 +341,9 @@ name C<tab_navigation>:
 
 =head1 SAMPLE CSS
 
-Here is some CSS that works with the template included in the synopsis.  It's
-probably not exactly what you need, but it should give a decent starting
-point...
+Here is some CSS that works with the template included in the synopsis.
+It's probably not exactly what you need, but it should give a decent
+starting point...
 
   ul.tabs {
     text-align: left;
